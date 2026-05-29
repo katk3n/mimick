@@ -228,6 +228,100 @@ ${chunkText}`;
     }
   }
 };
+// Gemini API を用いたセマンティックチャンク分割＆翻訳の一括取得
+const generateSemanticChunksWithGemini = async (text: string, apiKey: string) => {
+  if (!apiKey) throw new Error("API key not set");
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+
+  const lang = detectLanguage(text);
+  const langFullName = lang === 'kr' ? 'Korean' : lang === 'es' ? 'Spanish' : 'English';
+
+  const systemInstruction = 
+    `You are an expert language teacher specializing in "Reproduction Training" (retention and speaking exercises). ` +
+    `Your task is to analyze the input ${langFullName} text and split it into natural, semantically complete chunks for three difficulty levels (easy, normal, hard) based on cognitive load and short-term memory capacity. ` +
+    `For each individual chunk in easy, normal, and hard difficulties, you must also provide a natural Japanese translation. ` +
+    `Pedagogical Rules for Chunking:\n` +
+    `- Never split in the middle of a tightly bound grammatical phrase (e.g., prepositional phrases, noun phrases, close compound words).\n` +
+    `- Chunks must represent complete, meaningful semantic units to be easily retained in the learner's working memory.\n` +
+    `- Easy: Smallest meaningful phrases (e.g. 2-5 words). Extremely low cognitive load.\n` +
+    `- Normal: Standard clauses, complete verb phrases, or main clauses. Ideal for standard reproduction.\n` +
+    `- Hard: Longer compound clauses or complex sentences to challenge the learner's retention capacity.\n` +
+    `You must output a single JSON object matching the requested schema.`;
+
+  const prompt = `Input text to split and translate: "${text}"`;
+
+  const payload = {
+    contents: [{ parts: [{ text: prompt }] }],
+    systemInstruction: { parts: [{ text: systemInstruction }] },
+    generationConfig: {
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: "OBJECT",
+        properties: {
+          chunks: {
+            type: "OBJECT",
+            properties: {
+              easy: { type: "ARRAY", items: { type: "STRING" } },
+              normal: { type: "ARRAY", items: { type: "STRING" } },
+              hard: { type: "ARRAY", items: { type: "STRING" } }
+            },
+            required: ["easy", "normal", "hard"]
+          },
+          translations: {
+            type: "ARRAY",
+            items: {
+              type: "OBJECT",
+              properties: {
+                text: { type: "STRING" },
+                translation: { type: "STRING" }
+              },
+              required: ["text", "translation"]
+            }
+          }
+        },
+        required: ["chunks", "translations"]
+      }
+    }
+  };
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    throw new Error(`API error: ${response.status}`);
+  }
+
+  const data = await response.json();
+  const responseText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!responseText) {
+    throw new Error("No response text from Gemini");
+  }
+
+  const parsed = JSON.parse(responseText);
+  
+  // Format translations array into a lookup dictionary
+  const chunkTranslations: Record<string, string> = {};
+  if (Array.isArray(parsed.translations)) {
+    parsed.translations.forEach((item: any) => {
+      if (item && typeof item.text === 'string' && typeof item.translation === 'string') {
+        chunkTranslations[item.text.trim()] = item.translation.trim();
+      }
+    });
+  }
+
+  return {
+    chunks: {
+      easy: parsed.chunks.easy || [],
+      normal: parsed.chunks.normal || [],
+      hard: parsed.chunks.hard || [],
+      none: [text]
+    },
+    chunkTranslations
+  };
+};
 
 // 言語の自動判定
 const detectLanguage = (text: string) => {
@@ -239,7 +333,7 @@ const detectLanguage = (text: string) => {
 // 自然言語処理による自動チャンク分割関数
 const generateChunksFromText = (text: string) => {
   const lang = detectLanguage(text);
-  const sentences = text.match(/[^.!?。！？¿¡]+[.!?。！？¿¡]*/g) || [text];
+  const sentences = text.match(/(?:\d\.\d|[^.!?。！？¿¡])+[.!?。！？¿¡]*/g) || [text];
   
   const createChunksByDifficulty = (targetWords: number) => {
     let chunks: string[] = [];
@@ -285,9 +379,19 @@ const generateChunksFromText = (text: string) => {
   };
 
   if (lang === 'kr') {
-    return { easy: createChunksByDifficulty(2), normal: createChunksByDifficulty(4), hard: createChunksByDifficulty(8) };
+    return {
+      easy: createChunksByDifficulty(2),
+      normal: createChunksByDifficulty(4),
+      hard: createChunksByDifficulty(8),
+      none: [text]
+    };
   } else {
-    return { easy: createChunksByDifficulty(4), normal: createChunksByDifficulty(8), hard: createChunksByDifficulty(15) };
+    return {
+      easy: createChunksByDifficulty(4),
+      normal: createChunksByDifficulty(8),
+      hard: createChunksByDifficulty(15),
+      none: [text]
+    };
   }
 };
 
@@ -299,7 +403,9 @@ interface Lesson {
     easy: string[];
     normal: string[];
     hard: string[];
+    none?: string[];
   };
+  chunkTranslations?: Record<string, string>;
 }
 
 const createLesson = (id: number, title: string, text: string): Lesson => ({
@@ -387,7 +493,7 @@ export default function App() {
     }
   });
   const [currentLessonIndex, setCurrentLessonIndex] = useState<number | null>(null); 
-  const [difficulty, setDifficulty] = useState<'easy' | 'normal' | 'hard'>('normal'); 
+  const [difficulty, setDifficulty] = useState<'easy' | 'normal' | 'hard' | 'none'>('normal'); 
   const [currentChunkIndex, setCurrentChunkIndex] = useState<number>(0);
   const [playbackRate, setPlaybackRate] = useState<number>(1.0);
   const [ttsEngine, setTtsEngine] = useState<'gemini' | 'browser'>(
@@ -420,6 +526,7 @@ export default function App() {
   const [prefetchStatus, setPrefetchStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
 
   const [showInputModal, setShowInputModal] = useState<boolean>(false);
+  const [isSavingCustom, setIsSavingCustom] = useState<boolean>(false);
   const [editingLessonId, setEditingLessonId] = useState<number | null>(null);
   const [customTitle, setCustomTitle] = useState<string>('');
   const [customText, setCustomText] = useState<string>('');
@@ -454,8 +561,71 @@ export default function App() {
   const chunkRefs = useRef<(HTMLSpanElement | null)[]>([]);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
+  // お題（レッスン）や難易度が切り替わった時に、チャンクの選択位置を最初（0番目）にリセットし、再生状態や翻訳状態をクリアする
+  useEffect(() => {
+    setCurrentChunkIndex(0);
+    setRevealedChunks([]);
+    setVisibleTranslations([]);
+    setErrorMsg('');
+    setIsPlaying(false);
+    setIsLoading(false);
+    if (audioRef.current) {
+      try {
+        audioRef.current.pause();
+        if ('currentTime' in audioRef.current) {
+          (audioRef.current as any).currentTime = 0;
+        }
+      } catch (e) {}
+      audioRef.current = null;
+    }
+  }, [currentLessonIndex, difficulty]);
+
+  // お題（レッスン）を選択した際、もしそのお題が古い形式（またはプリセット）で、
+  // Geminiによるチャンク分割および日本語訳の一括事前計算が行われていない場合、
+  // かつAPIキーが存在するなら、バックグラウンドで自動的にGemini APIを呼び出してレッスンをアップグレードする
+  useEffect(() => {
+    if (currentLessonIndex === null || !apiKey) return;
+    const lesson = lessons[currentLessonIndex];
+    if (!lesson || lesson.chunkTranslations) return; // 既にアップグレード済みの場合は何もしない
+
+    let isCancelled = false;
+
+    const upgradeLessonWithGemini = async () => {
+      try {
+        const result = await generateSemanticChunksWithGemini(lesson.fullText, apiKey);
+        if (isCancelled) return;
+
+        // レッスン情報をGeminiによる高精度データに更新してStateに保存
+        setLessons(prevLessons => 
+          prevLessons.map((l, idx) => 
+            idx === currentLessonIndex
+              ? {
+                  ...l,
+                  chunks: result.chunks,
+                  chunkTranslations: result.chunkTranslations
+                }
+              : l
+          )
+        );
+        
+        // チャンク分割が新しくなったため、現在のチャンク位置を最初（0）に安全にリセット
+        setCurrentChunkIndex(0);
+        setRevealedChunks([]);
+        setVisibleTranslations([]);
+      } catch (err) {
+        console.error("Failed to automatically upgrade lesson chunks with Gemini:", err);
+      }
+    };
+
+    upgradeLessonWithGemini();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [currentLessonIndex, apiKey]);
+
   const currentLesson = currentLessonIndex !== null ? lessons[currentLessonIndex] : null;
-  const chunks = currentLesson ? currentLesson.chunks[difficulty] : [];
+  const chunks = currentLesson ? (currentLesson.chunks[difficulty] || [currentLesson.fullText]) : [];
   const progress = chunks.length > 0 ? ((currentChunkIndex + 1) / chunks.length) * 100 : 0;
 
   const handleSaveApiKey = () => {
@@ -565,12 +735,21 @@ export default function App() {
   }, [currentLesson, translations, loadingTrans, apiKey]);
 
   useEffect(() => {
-    if (currentLessonIndex === null || !apiKey) return;
+    if (currentLessonIndex === null) return;
     const currentChunkText = chunks[currentChunkIndex];
-    if (currentChunkText && visibleTranslations.includes(currentChunkIndex)) {
-      fetchTranslationForChunk(currentChunkText);
+    if (!currentChunkText || !visibleTranslations.includes(currentChunkIndex)) return;
+
+    // もし事前に翻訳が計算されて保持されている場合は、APIを叩かずに即座にStateに展開して早期リターンする
+    if (currentLesson?.chunkTranslations?.[currentChunkText]) {
+      if (!translations[currentChunkText]) {
+        setTranslations(prev => ({ ...prev, [currentChunkText]: currentLesson.chunkTranslations![currentChunkText] }));
+      }
+      return;
     }
-  }, [currentChunkIndex, visibleTranslations, chunks, fetchTranslationForChunk, currentLessonIndex, apiKey]);
+
+    if (!apiKey) return;
+    fetchTranslationForChunk(currentChunkText);
+  }, [currentChunkIndex, visibleTranslations, chunks, fetchTranslationForChunk, currentLessonIndex, apiKey, currentLesson, translations]);
 
   useEffect(() => {
     if (currentLessonIndex === null) {
@@ -809,9 +988,6 @@ export default function App() {
     if (!isLoading) {
       setCurrentChunkIndex(index);
       playChunk(index);
-      if (!showText) {
-        setRevealedChunks(prev => prev.includes(index) ? prev.filter(i => i !== index) : [...prev, index]);
-      }
     }
   };
 
@@ -832,13 +1008,39 @@ export default function App() {
     setCustomText('');
     setCustomTitle('');
     setEditingLessonId(null);
+    setIsSavingCustom(false);
   };
 
-  const handleSaveCustomLesson = () => {
-    if (!customText.trim()) return;
-    const lang = detectLanguage(customText);
+  const handleSaveCustomLesson = async () => {
+    if (!customText.trim() || isSavingCustom) return;
+    setIsSavingCustom(true);
+
+    const textToProcess = customText.trim();
+    const lang = detectLanguage(textToProcess);
     const langLabel = lang === 'kr' ? "(KR)" : lang === 'es' ? "(ES)" : "(EN)";
     
+    let generatedChunks: Lesson['chunks'] | null = null;
+    let generatedTranslations: Record<string, string> | null = null;
+
+    if (apiKey) {
+      try {
+        const result = await generateSemanticChunksWithGemini(textToProcess, apiKey);
+        generatedChunks = result.chunks;
+        generatedTranslations = result.chunkTranslations;
+      } catch (err) {
+        console.error("Gemini semantic chunking failed, falling back to local regex chunking:", err);
+      }
+    }
+
+    // Fallback if API key is not set or API call failed
+    if (!generatedChunks) {
+      generatedChunks = {
+        ...generateChunksFromText(textToProcess),
+        none: [textToProcess]
+      };
+      generatedTranslations = {};
+    }
+
     if (editingLessonId !== null) {
       // 既存お題の編集
       const updated = lessons.map(l => {
@@ -847,7 +1049,7 @@ export default function App() {
           const newTitle = title.includes(langLabel) ? title : `${title} ${langLabel}`;
           
           // テキスト自体が変わった場合、音声キャッシュを自動で破棄する（重要）
-          if (l.fullText !== customText.trim()) {
+          if (l.fullText !== textToProcess) {
             try {
               const keys = Object.keys(localStorage);
               keys.forEach(key => {
@@ -860,7 +1062,13 @@ export default function App() {
             }
           }
           
-          return createLesson(l.id, newTitle, customText.trim());
+          return {
+            id: l.id,
+            title: newTitle,
+            fullText: textToProcess,
+            chunks: generatedChunks!,
+            chunkTranslations: generatedTranslations || {}
+          };
         }
         return l;
       });
@@ -869,7 +1077,13 @@ export default function App() {
       // 新規追加
       const title = customTitle.trim() || `Custom Lesson ${lessons.length - DEFAULT_LESSONS.length + 1} ${langLabel}`;
       const newTitle = title.includes(langLabel) ? title : `${title} ${langLabel}`;
-      const newLesson = createLesson(Date.now(), newTitle, customText.trim());
+      const newLesson: Lesson = {
+        id: Date.now(),
+        title: newTitle,
+        fullText: textToProcess,
+        chunks: generatedChunks,
+        chunkTranslations: generatedTranslations || {}
+      };
       const newLessons = [...lessons, newLesson];
       setLessons(newLessons);
       setCurrentLessonIndex(newLessons.length - 1); 
@@ -989,7 +1203,11 @@ export default function App() {
               <h3 className="font-bold text-slate-800">
                 {editingLessonId !== null ? "お題を編集" : "新しいお題を入力"}
               </h3>
-              <button onClick={handleCloseInputModal} className="text-slate-400 hover:text-slate-600 bg-white rounded-full p-1 shadow-sm">
+              <button 
+                onClick={handleCloseInputModal} 
+                disabled={isSavingCustom}
+                className="text-slate-400 hover:text-slate-600 bg-white rounded-full p-1 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+              >
                 <X size={20} />
               </button>
             </div>
@@ -1000,8 +1218,9 @@ export default function App() {
                   type="text" 
                   value={customTitle}
                   onChange={e => setCustomTitle(e.target.value)}
+                  disabled={isSavingCustom}
                   placeholder="例: TED Talk / ドラマのセリフ"
-                  className="w-full p-2.5 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-500 transition-shadow text-sm"
+                  className="w-full p-2.5 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-500 transition-shadow text-sm disabled:opacity-50 disabled:bg-slate-50"
                 />
               </div>
               <div className="flex-1 flex flex-col">
@@ -1009,24 +1228,31 @@ export default function App() {
                 <textarea 
                   value={customText}
                   onChange={e => setCustomText(e.target.value)}
+                  disabled={isSavingCustom}
                   placeholder="ここに練習したい文章を貼り付けてください...&#13;&#10;※言語はAIが自動で判定します。"
-                  className="w-full flex-1 min-h-[200px] p-3 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-500 resize-none transition-shadow text-sm"
+                  className="w-full flex-1 min-h-[200px] p-3 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-500 resize-none transition-shadow text-sm disabled:opacity-50 disabled:bg-slate-50"
                 />
               </div>
             </div>
             <div className="p-4 border-t border-slate-100 bg-slate-50 flex justify-end gap-3">
               <button 
                 onClick={handleCloseInputModal}
-                className="px-4 py-2 text-slate-600 font-medium hover:bg-slate-200 rounded-lg transition-colors text-sm"
+                disabled={isSavingCustom}
+                className="px-4 py-2 text-slate-600 font-medium hover:bg-slate-200 rounded-lg transition-colors text-sm disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 キャンセル
               </button>
               <button 
                 onClick={handleSaveCustomLesson}
-                disabled={!customText.trim()}
+                disabled={!customText.trim() || isSavingCustom}
                 className="px-5 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 text-sm shadow-md"
               >
-                {editingLessonId !== null ? (
+                {isSavingCustom ? (
+                  <>
+                    <Loader2 size={16} className="animate-spin" />
+                    AI分割・翻訳中...
+                  </>
+                ) : editingLessonId !== null ? (
                   <>保存する</>
                 ) : (
                   <><Plus size={16} /> 追加して始める</>
@@ -1131,15 +1357,20 @@ export default function App() {
         <div className="flex flex-col h-[100dvh] bg-slate-50 text-slate-800 font-sans overflow-hidden">
           <header className="bg-blue-600 text-white p-4 shadow-md shrink-0 z-10 relative">
             <div className="max-w-2xl mx-auto flex flex-row items-center justify-between">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 min-w-0 flex-1">
                 <button 
                   onClick={() => setCurrentLessonIndex(null)}
-                  className="text-white/90 hover:text-white hover:bg-white/10 p-1.5 rounded-full transition-colors -ml-2"
+                  className="text-white/90 hover:text-white hover:bg-white/10 p-1.5 rounded-full transition-colors -ml-2 shrink-0"
                   title="一覧に戻る"
                 >
                   <ChevronLeft size={24} />
                 </button>
-                <h1 className="text-lg font-bold tracking-tight truncate max-w-[150px] sm:max-w-xs ml-1">{currentLesson?.title.replace(/\s*\((KR|EN|ES)\)/, '')}</h1>
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-[11px] font-bold text-blue-600 bg-blue-50 border border-blue-100 px-2 py-0.5 rounded uppercase shrink-0">
+                    {currentLesson?.title.match(/\((KR|EN|ES)\)/)?.[1] || 'EN'}
+                  </span>
+                  <h1 className="text-lg font-bold tracking-tight truncate max-w-[120px] sm:max-w-[200px] md:max-w-xs">{currentLesson?.title.replace(/\s*\((KR|EN|ES)\)/, '')}</h1>
+                </div>
               </div>
               <div className="flex items-center gap-2">
                 <div className="flex text-[11px] sm:text-xs font-medium px-2.5 py-1 sm:px-3 sm:py-1.5 rounded-full items-center gap-1 sm:gap-1.5 shrink-0">
@@ -1356,7 +1587,7 @@ export default function App() {
                         <Scissors size={12} />
                         <span>チャンク（区切り）の長さ</span>
                       </div>
-                      <select
+                       <select
                         value={difficulty}
                         onChange={(e) => setDifficulty(e.target.value as any)}
                         className="w-full py-1 px-2 text-[11px] font-semibold rounded-lg border border-slate-200 bg-white text-slate-700 shadow-sm focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 h-[26px]"
@@ -1364,6 +1595,7 @@ export default function App() {
                         <option value="easy">短め (Easy)</option>
                         <option value="normal">標準 (Normal)</option>
                         <option value="hard">長め (Hard)</option>
+                        <option value="none">区切らない (None)</option>
                       </select>
                     </div>
 

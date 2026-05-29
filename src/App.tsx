@@ -18,9 +18,14 @@ import {
   ChevronLeft,
   Key,
   ExternalLink,
-  Mic
+  Mic,
+  Edit3,
+  Trash2,
+  RotateCcw
 } from 'lucide-react';
 
+// WAVファイルを作成するためのユーティリティ関数
+// Web Speech API 用に最適なボイスを取得する関数
 // WAVファイルを作成するためのユーティリティ関数
 const createWavFile = (base64Data: string, sampleRate: number) => {
   const binaryStr = atob(base64Data);
@@ -60,6 +65,74 @@ const createWavFile = (base64Data: string, sampleRate: number) => {
   };
 };
 
+// 音声を永続保存するためのローカルストレージヘルパー
+const getCachedAudio = (lessonId: number, difficulty: string, index: number) => {
+  try {
+    const key = `mimick_audio_${lessonId}_${difficulty}_${index}`;
+    const cached = localStorage.getItem(key);
+    if (!cached) return null;
+    const parsed = JSON.parse(cached);
+    // 厳密な型チェック: base64Dataが正常な文字列オブジェクトか検証
+    if (parsed && typeof parsed === 'object' && typeof parsed.base64Data === 'string' && typeof parsed.sampleRate === 'number') {
+      return parsed;
+    }
+    // 不整合または古い形式のキャッシュは安全に破棄
+    localStorage.removeItem(key);
+    return null;
+  } catch (e) {
+    return null;
+  }
+};
+
+const setCachedAudio = (lessonId: number, difficulty: string, index: number, data: { base64Data: string; sampleRate: number; duration: number }) => {
+  try {
+    const key = `mimick_audio_${lessonId}_${difficulty}_${index}`;
+    localStorage.setItem(key, JSON.stringify(data));
+  } catch (e: any) {
+    // 容量制限（QuotaExceededError）時は、他の古いレッスンのキャッシュを優先的に削除
+    if (e && e.name === 'QuotaExceededError') {
+      console.warn("Storage quota exceeded. Evicting older audio caches...");
+      try {
+        const keys = Object.keys(localStorage).filter(k => k.startsWith('mimick_audio_'));
+        const currentPrefix = `mimick_audio_${lessonId}_`;
+        const otherKeys = keys.filter(k => !k.startsWith(currentPrefix));
+        const activeKeys = keys.filter(k => k.startsWith(currentPrefix));
+        
+        // 他のレッスンのオーディオキャッシュを全削除
+        for (const k of otherKeys) {
+          localStorage.removeItem(k);
+        }
+        
+        // それでも足りない場合は、現在のレッスンのインデックスの古いもの（前半）を一部削除
+        if (activeKeys.length > 0) {
+          activeKeys.sort(); // キー名順にソートして古い順（インデックス順）に削除
+          for (let i = 0; i < Math.min(activeKeys.length, 5); i++) {
+            localStorage.removeItem(activeKeys[i]);
+          }
+        }
+        
+        const key = `mimick_audio_${lessonId}_${difficulty}_${index}`;
+        localStorage.setItem(key, JSON.stringify(data));
+      } catch (retryError) {
+        console.error("Failed to save even after evicting older cache:", retryError);
+      }
+    }
+  }
+};
+
+const clearAllAudioCaches = () => {
+  try {
+    const keys = Object.keys(localStorage);
+    keys.forEach(key => {
+      if (key.startsWith('mimick_audio_')) {
+        localStorage.removeItem(key);
+      }
+    });
+  } catch (e) {
+    console.error("Failed to clear audio caches:", e);
+  }
+};
+
 // Gemini TTS API (音声合成)
 const generateSpeechWithRetry = async (text: string, apiKey: string) => {
   if (!apiKey) throw new Error("APIキーが設定されていません。");
@@ -96,10 +169,14 @@ const generateSpeechWithRetry = async (text: string, apiKey: string) => {
         const rateMatch = mimeType.match(/rate=(\d+)/);
         const sampleRate = rateMatch ? parseInt(rateMatch[1], 10) : 24000;
         
-        const wavData = createWavFile(base64Data, sampleRate);
+        // durationを概算（WAVファイル全体の秒数）
+        const binaryStr = atob(base64Data);
+        const duration = binaryStr.length / (sampleRate * 2);
+
         return {
-          url: URL.createObjectURL(wavData.blob),
-          duration: wavData.duration
+          base64Data,
+          sampleRate,
+          duration
         };
       }
       throw new Error("No audio data returned");
@@ -242,7 +319,14 @@ export default function App() {
   const [showApiModal, setShowApiModal] = useState(() => !localStorage.getItem('mimick_api_key'));
   const [tempApiKey, setTempApiKey] = useState(apiKey);
 
-  const [lessons, setLessons] = useState<Lesson[]>(DEFAULT_LESSONS);
+  const [lessons, setLessons] = useState<Lesson[]>(() => {
+    try {
+      const saved = localStorage.getItem('mimick_lessons');
+      return saved ? JSON.parse(saved) : DEFAULT_LESSONS;
+    } catch (e) {
+      return DEFAULT_LESSONS;
+    }
+  });
   const [currentLessonIndex, setCurrentLessonIndex] = useState<number | null>(null); 
   const [difficulty, setDifficulty] = useState<'easy' | 'normal' | 'hard'>('normal'); 
   const [currentChunkIndex, setCurrentChunkIndex] = useState<number>(0);
@@ -259,12 +343,21 @@ export default function App() {
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string>('');
   
-  const [isPrefetching, setIsPrefetching] = useState<boolean>(false);
   const [prefetchProgress, setPrefetchProgress] = useState<number>(0);
+  const [prefetchStatus, setPrefetchStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
 
   const [showInputModal, setShowInputModal] = useState<boolean>(false);
+  const [editingLessonId, setEditingLessonId] = useState<number | null>(null);
   const [customTitle, setCustomTitle] = useState<string>('');
   const [customText, setCustomText] = useState<string>('');
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('mimick_lessons', JSON.stringify(lessons));
+    } catch (e) {
+      console.error("Failed to save lessons:", e);
+    }
+  }, [lessons]);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioCache = useRef<Record<string, Promise<{ url: string; duration: number; correctionRate: number }>>>({});
@@ -298,29 +391,64 @@ export default function App() {
     }
   }, [currentChunkIndex, scrollToChunk, currentLessonIndex]);
 
-  const getAudioInfo = async (text: string) => {
+  const getAudioInfo = async (lessonId: number, difficulty: string, index: number, text: string) => {
     if (!apiKey) throw new Error("APIキーが設定されていません。");
-    if (!audioCache.current[text]) {
-      audioCache.current[text] = generateSpeechWithRetry(text, apiKey).then(info => {
-        if (!info) throw new Error("Failed to generate speech info");
-        const lang = detectLanguage(text);
-        const charCount = lang === 'kr' 
-          ? Math.max(1, text.replace(/[^가-힣a-zA-Z0-9]/g, '').length)
-          : Math.max(1, text.replace(/[^a-zA-Z0-9áéíóúñÁÉÍÓÚÑ¿¡]/g, '').length);
+    const cacheKey = `${lessonId}_${difficulty}_${index}`;
+    
+    if (!audioCache.current[cacheKey]) {
+      audioCache.current[cacheKey] = (async () => {
+        try {
+          // 1. ローカルストレージキャッシュの確認
+          let audioData = getCachedAudio(lessonId, difficulty, index);
           
-        const speechDuration = Math.max(0.1, info.duration - 0.3);
-        const actualCPS = charCount / speechDuration;
-        const targetCPS = lang === 'kr' ? 7.5 : 13.5; 
-        
-        let correctionRate = targetCPS / actualCPS;
-        correctionRate = Math.max(0.75, Math.min(1.35, correctionRate));
-        return { ...info, correctionRate };
-      }).catch(err => {
-        delete audioCache.current[text];
-        throw err;
-      });
+          // 2. なければ Gemini TTS API からロード
+          if (!audioData) {
+            audioData = await generateSpeechWithRetry(text, apiKey);
+            // キャッシュへ保存
+            setCachedAudio(lessonId, difficulty, index, audioData);
+          }
+          
+          // 3. Base64データから WAV Blob & URL を生成
+          let wavData;
+          try {
+            wavData = createWavFile(audioData.base64Data, audioData.sampleRate);
+          } catch (decodingError) {
+            console.warn("Cached audio decoding failed. Invalid Base64 in storage. Retrying API fetch...", decodingError);
+            // 破損したキャッシュを削除
+            const key = `mimick_audio_${lessonId}_${difficulty}_${index}`;
+            localStorage.removeItem(key);
+            // APIから再度ロードしてキャッシュを修復
+            audioData = await generateSpeechWithRetry(text, apiKey);
+            setCachedAudio(lessonId, difficulty, index, audioData);
+            wavData = createWavFile(audioData.base64Data, audioData.sampleRate);
+          }
+          
+          // 4. 音声の補正比率（Pacing）を計算
+          const lang = detectLanguage(text);
+          const charCount = lang === 'kr' 
+            ? Math.max(1, text.replace(/[^가-힣a-zA-Z0-9]/g, '').length)
+            : Math.max(1, text.replace(/[^a-zA-Z0-9áéíóúñÁÉÍÓÚÑ¿¡]/g, '').length);
+            
+          const speechDuration = Math.max(0.1, audioData.duration - 0.3);
+          const actualCPS = charCount / speechDuration;
+          const targetCPS = lang === 'kr' ? 7.5 : 13.5; 
+          
+          let correctionRate = targetCPS / actualCPS;
+          correctionRate = Math.max(0.75, Math.min(1.35, correctionRate));
+          
+          return {
+            url: URL.createObjectURL(wavData.blob),
+            duration: audioData.duration,
+            correctionRate
+          };
+        } catch (error) {
+          // エラーが発生した場合は、メモリキャッシュから削除して次回再試行できるようにする
+          delete audioCache.current[cacheKey];
+          throw error;
+        }
+      })();
     }
-    return await audioCache.current[text];
+    return await audioCache.current[cacheKey];
   };
 
   const fetchTranslationForChunk = useCallback(async (chunkText: string) => {
@@ -358,29 +486,62 @@ export default function App() {
   }, [currentChunkIndex, visibleTranslations, chunks, fetchTranslationForChunk, currentLessonIndex, apiKey]);
 
   useEffect(() => {
-    if (currentLessonIndex === null || !apiKey) return;
+    if (currentLessonIndex === null) {
+      setPrefetchStatus('idle');
+      return;
+    }
+    if (!apiKey) {
+      setPrefetchStatus('idle');
+      return;
+    }
     let isCancelled = false;
     
     const prefetchData = async () => {
-      if (!chunks || chunks.length === 0) return;
-      setIsPrefetching(true);
+      if (!chunks || chunks.length === 0) {
+        setPrefetchStatus('idle');
+        return;
+      }
+      setPrefetchStatus('loading');
       setPrefetchProgress(0);
       let loadedCount = 0;
 
       for (let i = 0; i < chunks.length; i++) {
         if (isCancelled) break;
         const text = chunks[i];
+        
+        // すでにローカルストレージにキャッシュがあるか確認
+        const hasCache = !!getCachedAudio(currentLesson?.id ?? -1, difficulty, i);
+        
         try {
-          await getAudioInfo(text);
+          await getAudioInfo(currentLesson?.id ?? -1, difficulty, i, text);
           loadedCount++;
           if (!isCancelled) setPrefetchProgress(Math.floor((loadedCount / chunks.length) * 100));
-          await new Promise(r => setTimeout(r, 250));
-        } catch (err) {
+          
+          // キャッシュが既にあれば待機時間なしで次へ。
+          // キャッシュがなく新規にAPIを叩く場合は、レート制限（15 RPM = 4秒に1回）を考慮して 3000ms の遅延を入れる
+          if (!hasCache && i < chunks.length - 1) {
+            await new Promise(r => setTimeout(r, 3000));
+          } else {
+            // キャッシュがある場合でも、ブラウザスレッドを止めないよう僅かな遅延（50ms）
+            await new Promise(r => setTimeout(r, 50));
+          }
+        } catch (err: any) {
           console.error("Prefetch error for:", text, err);
-          loadedCount++; 
+          if (!isCancelled) {
+            setPrefetchStatus('error');
+            const isRateLimit = err?.message?.includes('429') || (err instanceof Error && err.message.includes('rate'));
+            if (isRateLimit) {
+              setErrorMsg("APIの利用制限（1分間に15回）に達しました。少し待ってからプレイ、または次のチャンクに進んでください。");
+            } else {
+              setErrorMsg("AI音声の事前読み込み中にエラーが発生しました。APIキーが正しいか確認してください。");
+            }
+            break; // エラー発生時は中断
+          }
         }
       }
-      if (!isCancelled) setIsPrefetching(false);
+      if (!isCancelled && loadedCount === chunks.length) {
+        setPrefetchStatus('success');
+      }
     };
 
     setCurrentChunkIndex(0);
@@ -393,11 +554,19 @@ export default function App() {
     translationCache.current = {};
     
     chunkRefs.current = new Array(chunks?.length || 0).fill(null);
-    if (audioRef.current) audioRef.current.pause();
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
     setErrorMsg('');
 
     prefetchData();
-    return () => { isCancelled = true; };
+    return () => { 
+      isCancelled = true; 
+      // メモリ内の Blob URL を途中で解放すると React 18 Strict Mode での並行実行時
+      // アクティブなロードが破損するため、ここではフラグ設定 (isCancelled = true) のみに留め、
+      // 実際のリソース解放はコンポーネントの完全なアンマウント時のみに行います。
+    };
   }, [currentLessonIndex, difficulty, chunks, apiKey]);
 
   useEffect(() => {
@@ -418,12 +587,14 @@ export default function App() {
 
   useEffect(() => {
     if (audioRef.current) {
-      audioRef.current.playbackRate = playbackRate * currentCorrectionRate.current;
+      // Safari などのクラッシュを防ぐため、再生速度を 0.5 から 3.0 の範囲に制限（クランプ）
+      const rate = Math.max(0.5, Math.min(3.0, playbackRate * currentCorrectionRate.current));
+      audioRef.current.playbackRate = rate;
     }
   }, [playbackRate]);
 
   const playChunk = useCallback(async (index: number) => {
-    if (currentLessonIndex === null) return;
+    if (currentLessonIndex === null || !currentLesson) return;
     if (!apiKey) {
       setShowApiModal(true);
       return;
@@ -438,27 +609,37 @@ export default function App() {
       setIsPlaying(false);
       setIsLoading(true);
       
-      const audioInfo = await getAudioInfo(text);
+      const audioInfo = await getAudioInfo(currentLesson.id, difficulty, index, text);
       const audio = new Audio(audioInfo.url);
       
       currentCorrectionRate.current = audioInfo.correctionRate;
-      audio.playbackRate = playbackRate * audioInfo.correctionRate;
+      
+      // Safari などのクラッシュを防ぐため、再生速度を 0.5 から 3.0 の範囲に制限（クランプ）
+      const rate = Math.max(0.5, Math.min(3.0, playbackRate * audioInfo.correctionRate));
+      audio.playbackRate = rate;
       audioRef.current = audio;
 
       audio.onplay = () => { setIsLoading(false); setIsPlaying(true); };
       audio.onended = () => setIsPlaying(false);
-      audio.onerror = () => {
+      audio.onerror = (e) => {
+        console.error("Audio element playback error event:", e);
         setIsPlaying(false); setIsLoading(false);
         setErrorMsg("音声の再生中にエラーが発生しました。");
       };
 
       await audio.play();
-    } catch (err) {
-      console.error(err);
+    } catch (err: any) {
+      console.error("playChunk error:", err);
       setIsLoading(false); setIsPlaying(false);
-      setErrorMsg("AI音声の生成に失敗しました。APIキーが正しいか確認してください。");
+      
+      const isRateLimit = err?.message?.includes('429') || (err instanceof Error && err.message.includes('rate'));
+      if (isRateLimit) {
+        setErrorMsg("APIの利用制限（1分間に15回）に達しました。少し待ってから再生してください。");
+      } else {
+        setErrorMsg("AI音声の生成に失敗しました。APIキーが正しいか確認してください。");
+      }
     }
-  }, [chunks, playbackRate, currentLessonIndex, apiKey]);
+  }, [chunks, playbackRate, currentLessonIndex, currentLesson, difficulty, apiKey]);
 
   const handlePlayCurrent = () => { if (!isLoading) playChunk(currentChunkIndex); };
   const handleNext = () => {
@@ -509,20 +690,90 @@ export default function App() {
     }
   };
 
-  const handleAddCustomLesson = () => {
-    if (!customText.trim()) return;
-    const lang = detectLanguage(customText);
-    const langLabel = lang === 'kr' ? "(KR)" : lang === 'es' ? "(ES)" : "(EN)";
-    const title = customTitle.trim() || `Custom Lesson ${lessons.length - DEFAULT_LESSONS.length + 1} ${langLabel}`;
-    
-    const newLesson = createLesson(Date.now(), title, customText);
-    const newLessons = [...lessons, newLesson];
-    
-    setLessons(newLessons);
-    setCurrentLessonIndex(newLessons.length - 1); 
+  const handleCloseInputModal = () => {
     setShowInputModal(false);
     setCustomText('');
     setCustomTitle('');
+    setEditingLessonId(null);
+  };
+
+  const handleSaveCustomLesson = () => {
+    if (!customText.trim()) return;
+    const lang = detectLanguage(customText);
+    const langLabel = lang === 'kr' ? "(KR)" : lang === 'es' ? "(ES)" : "(EN)";
+    
+    if (editingLessonId !== null) {
+      // 既存お題の編集
+      const updated = lessons.map(l => {
+        if (l.id === editingLessonId) {
+          const title = customTitle.trim() || l.title.replace(/\s*\((KR|EN|ES)\)/, '');
+          const newTitle = title.includes(langLabel) ? title : `${title} ${langLabel}`;
+          
+          // テキスト自体が変わった場合、音声キャッシュを自動で破棄する（重要）
+          if (l.fullText !== customText.trim()) {
+            try {
+              const keys = Object.keys(localStorage);
+              keys.forEach(key => {
+                if (key.startsWith(`mimick_audio_${editingLessonId}_`)) {
+                  localStorage.removeItem(key);
+                }
+              });
+            } catch (err) {
+              console.error("Failed to clear updated audio cache:", err);
+            }
+          }
+          
+          return createLesson(l.id, newTitle, customText.trim());
+        }
+        return l;
+      });
+      setLessons(updated);
+    } else {
+      // 新規追加
+      const title = customTitle.trim() || `Custom Lesson ${lessons.length - DEFAULT_LESSONS.length + 1} ${langLabel}`;
+      const newTitle = title.includes(langLabel) ? title : `${title} ${langLabel}`;
+      const newLesson = createLesson(Date.now(), newTitle, customText.trim());
+      const newLessons = [...lessons, newLesson];
+      setLessons(newLessons);
+      setCurrentLessonIndex(newLessons.length - 1); 
+    }
+    
+    handleCloseInputModal();
+  };
+
+  const handleDeleteLesson = (id: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (window.confirm("このお題を削除してもよろしいですか？")) {
+      const updated = lessons.filter(l => l.id !== id);
+      setLessons(updated);
+      
+      // 関連する音声キャッシュのクリア
+      try {
+        const keys = Object.keys(localStorage);
+        keys.forEach(key => {
+          if (key.startsWith(`mimick_audio_${id}_`)) {
+            localStorage.removeItem(key);
+          }
+        });
+      } catch (err) {
+        console.error("Failed to clear deleted audio cache:", err);
+      }
+    }
+  };
+
+  const handleOpenEditModal = (lesson: Lesson, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setEditingLessonId(lesson.id);
+    setCustomTitle(lesson.title.replace(/\s*\((KR|EN|ES)\)/, ''));
+    setCustomText(lesson.fullText);
+    setShowInputModal(true);
+  };
+
+  const handleResetDefaultLessons = () => {
+    if (window.confirm("すべてのお題を初期状態に戻しますか？（追加したカスタムお題は消去されます）")) {
+      setLessons(DEFAULT_LESSONS);
+      clearAllAudioCaches();
+    }
   };
 
   const allTranslationsVisible = chunks.length > 0 && chunks.every((_, i) => visibleTranslations.includes(i));
@@ -589,8 +840,10 @@ export default function App() {
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh] animate-in fade-in zoom-in-95 duration-200">
             <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
-              <h3 className="font-bold text-slate-800">新しいお題を入力</h3>
-              <button onClick={() => setShowInputModal(false)} className="text-slate-400 hover:text-slate-600 bg-white rounded-full p-1 shadow-sm">
+              <h3 className="font-bold text-slate-800">
+                {editingLessonId !== null ? "お題を編集" : "新しいお題を入力"}
+              </h3>
+              <button onClick={handleCloseInputModal} className="text-slate-400 hover:text-slate-600 bg-white rounded-full p-1 shadow-sm">
                 <X size={20} />
               </button>
             </div>
@@ -617,17 +870,21 @@ export default function App() {
             </div>
             <div className="p-4 border-t border-slate-100 bg-slate-50 flex justify-end gap-3">
               <button 
-                onClick={() => setShowInputModal(false)}
+                onClick={handleCloseInputModal}
                 className="px-4 py-2 text-slate-600 font-medium hover:bg-slate-200 rounded-lg transition-colors text-sm"
               >
                 キャンセル
               </button>
               <button 
-                onClick={handleAddCustomLesson}
+                onClick={handleSaveCustomLesson}
                 disabled={!customText.trim()}
                 className="px-5 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 text-sm shadow-md"
               >
-                <Plus size={16} /> 追加して始める
+                {editingLessonId !== null ? (
+                  <>保存する</>
+                ) : (
+                  <><Plus size={16} /> 追加して始める</>
+                )}
               </button>
             </div>
           </div>
@@ -659,12 +916,21 @@ export default function App() {
                 <h2 className="text-xl font-bold text-slate-800">お題を選ぶ</h2>
                 <p className="text-sm text-slate-500 mt-1">練習したいレッスンを選択してください</p>
               </div>
-              <button 
-                onClick={() => setShowInputModal(true)}
-                className="text-sm font-medium text-blue-600 bg-blue-50 px-3 py-2 rounded-lg hover:bg-blue-100 transition-colors flex items-center gap-1.5 border border-blue-100 shadow-sm"
-              >
-                <Plus size={16} /> 新しく入力
-              </button>
+              <div className="flex items-center gap-2">
+                <button 
+                  onClick={handleResetDefaultLessons}
+                  className="text-sm font-medium text-slate-500 hover:text-red-600 bg-slate-100 hover:bg-red-50 p-2 rounded-lg transition-colors border border-slate-200"
+                  title="初期状態に戻す"
+                >
+                  <RotateCcw size={16} />
+                </button>
+                <button 
+                  onClick={() => setShowInputModal(true)}
+                  className="text-sm font-medium text-blue-600 bg-blue-50 px-3 py-2 rounded-lg hover:bg-blue-100 transition-colors flex items-center gap-1.5 border border-blue-100 shadow-sm"
+                >
+                  <Plus size={16} /> 新しく入力
+                </button>
+              </div>
             </div>
             
             <div className="grid gap-3">
@@ -673,12 +939,12 @@ export default function App() {
                 const displayTitle = lesson.title.replace(/\s*\((KR|EN|ES)\)/, '');
                 
                 return (
-                  <button
+                  <div
                     key={lesson.id}
                     onClick={() => setCurrentLessonIndex(index)}
-                    className="flex items-center justify-between p-4 bg-white rounded-xl shadow-sm border border-slate-200 hover:border-blue-400 hover:shadow-md transition-all text-left group"
+                    className="flex items-center justify-between p-4 bg-white rounded-xl shadow-sm border border-slate-200 hover:border-blue-400 hover:shadow-md transition-all text-left group cursor-pointer"
                   >
-                    <div className="pr-4">
+                    <div className="pr-4 flex-1 min-w-0">
                       <div className="flex items-center gap-2 mb-1">
                         <span className="text-[11px] font-bold text-blue-600 bg-blue-50 border border-blue-100 px-2 py-0.5 rounded uppercase">
                           {langTag}
@@ -687,10 +953,26 @@ export default function App() {
                       </div>
                       <p className="text-sm text-slate-500 line-clamp-2 leading-relaxed mt-1.5">{lesson.fullText}</p>
                     </div>
-                    <div className="w-10 h-10 rounded-full bg-slate-50 group-hover:bg-blue-50 flex items-center justify-center shrink-0 transition-colors">
-                      <Play size={20} className="text-slate-400 group-hover:text-blue-500 ml-1" />
+                    <div className="flex items-center gap-1.5 shrink-0 pl-2">
+                      <button
+                        onClick={(e) => handleOpenEditModal(lesson, e)}
+                        className="p-2 text-slate-400 hover:text-blue-600 hover:bg-slate-100 rounded-lg transition-colors md:opacity-0 group-hover:opacity-100 focus:opacity-100"
+                        title="編集"
+                      >
+                        <Edit3 size={16} />
+                      </button>
+                      <button
+                        onClick={(e) => handleDeleteLesson(lesson.id, e)}
+                        className="p-2 text-slate-400 hover:text-red-600 hover:bg-slate-100 rounded-lg transition-colors md:opacity-0 group-hover:opacity-100 focus:opacity-100"
+                        title="削除"
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                      <div className="w-10 h-10 rounded-full bg-slate-50 group-hover:bg-blue-50 flex items-center justify-center transition-colors">
+                        <Play size={20} className="text-slate-400 group-hover:text-blue-500 ml-1" />
+                      </div>
                     </div>
-                  </button>
+                  </div>
                 );
               })}
             </div>
@@ -714,11 +996,23 @@ export default function App() {
                 <h1 className="text-lg font-bold tracking-tight truncate max-w-[150px] sm:max-w-xs ml-1">{currentLesson?.title.replace(/\s*\((KR|EN|ES)\)/, '')}</h1>
               </div>
               <div className="flex items-center gap-2">
-                <div className="flex text-[11px] sm:text-xs font-medium bg-blue-700 px-2.5 py-1 sm:px-3 sm:py-1.5 rounded-full items-center gap-1 sm:gap-1.5 shrink-0">
-                  {isPrefetching ? (
-                    <><Loader2 size={12} className="animate-spin sm:w-3.5 sm:h-3.5" /> 音声を準備中 {prefetchProgress}%</>
+                <div className="flex text-[11px] sm:text-xs font-medium px-2.5 py-1 sm:px-3 sm:py-1.5 rounded-full items-center gap-1 sm:gap-1.5 shrink-0">
+                  {!apiKey ? (
+                    <div className="flex items-center gap-1.5 bg-amber-700 text-white rounded-full px-2.5 py-1 sm:px-3 sm:py-1.5">
+                      <Key size={12} className="sm:w-3.5 sm:h-3.5 text-amber-300 animate-pulse" /> APIキー未設定
+                    </div>
+                  ) : prefetchStatus === 'loading' ? (
+                    <div className="flex items-center gap-1.5 bg-blue-700 text-white rounded-full px-2.5 py-1 sm:px-3 sm:py-1.5">
+                      <Loader2 size={12} className="animate-spin sm:w-3.5 sm:h-3.5" /> 音声を準備中 {prefetchProgress}%
+                    </div>
+                  ) : prefetchStatus === 'error' ? (
+                    <div className="flex items-center gap-1.5 bg-red-700 text-white rounded-full px-2.5 py-1 sm:px-3 sm:py-1.5">
+                      <AlertTriangle size={12} className="sm:w-3.5 sm:h-3.5 text-red-300" /> 準備失敗
+                    </div>
                   ) : (
-                    <><CheckCircle2 size={12} className="text-green-300 sm:w-3.5 sm:h-3.5" /> 準備完了</>
+                    <div className="flex items-center gap-1.5 bg-green-700 text-white rounded-full px-2.5 py-1 sm:px-3 sm:py-1.5">
+                      <CheckCircle2 size={12} className="text-green-300 sm:w-3.5 sm:h-3.5" /> 準備完了
+                    </div>
                   )}
                 </div>
               </div>

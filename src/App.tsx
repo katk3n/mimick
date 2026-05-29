@@ -713,21 +713,14 @@ export default function App() {
                 </button>
                 <h1 className="text-lg font-bold tracking-tight truncate max-w-[150px] sm:max-w-xs ml-1">{currentLesson?.title.replace(/\s*\((KR|EN|ES)\)/, '')}</h1>
               </div>
-              <div className="flex items-center gap-3">
-                <div className="hidden sm:flex text-xs font-medium bg-blue-700 px-3 py-1.5 rounded-full items-center gap-1.5">
+              <div className="flex items-center gap-2">
+                <div className="flex text-[11px] sm:text-xs font-medium bg-blue-700 px-2.5 py-1 sm:px-3 sm:py-1.5 rounded-full items-center gap-1 sm:gap-1.5 shrink-0">
                   {isPrefetching ? (
-                    <><Loader2 size={14} className="animate-spin" /> 音声を準備中 {prefetchProgress}%</>
+                    <><Loader2 size={12} className="animate-spin sm:w-3.5 sm:h-3.5" /> 音声を準備中 {prefetchProgress}%</>
                   ) : (
-                    <><CheckCircle2 size={14} className="text-green-300" /> 準備完了</>
+                    <><CheckCircle2 size={12} className="text-green-300 sm:w-3.5 sm:h-3.5" /> 準備完了</>
                   )}
                 </div>
-                <button 
-                  onClick={() => { setTempApiKey(apiKey); setShowApiModal(true); }}
-                  className="bg-blue-700 hover:bg-blue-800 p-2 rounded-full transition-colors"
-                  title="APIキー設定"
-                >
-                  <Key size={18} />
-                </button>
               </div>
             </div>
           </header>

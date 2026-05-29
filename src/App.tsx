@@ -21,11 +21,10 @@ import {
   Mic,
   Edit3,
   Trash2,
-  RotateCcw
+  RotateCcw,
+  SlidersHorizontal
 } from 'lucide-react';
 
-// WAVファイルを作成するためのユーティリティ関数
-// Web Speech API 用に最適なボイスを取得する関数
 // WAVファイルを作成するためのユーティリティ関数
 const createWavFile = (base64Data: string, sampleRate: number) => {
   const binaryStr = atob(base64Data);
@@ -66,9 +65,9 @@ const createWavFile = (base64Data: string, sampleRate: number) => {
 };
 
 // 音声を永続保存するためのローカルストレージヘルパー
-const getCachedAudio = (lessonId: number, difficulty: string, index: number) => {
+const getCachedAudio = (lessonId: number, difficulty: string, voiceGender: string, index: number) => {
   try {
-    const key = `mimick_audio_${lessonId}_${difficulty}_${index}`;
+    const key = `mimick_audio_${lessonId}_${difficulty}_${voiceGender}_${index}`;
     const cached = localStorage.getItem(key);
     if (!cached) return null;
     const parsed = JSON.parse(cached);
@@ -84,9 +83,9 @@ const getCachedAudio = (lessonId: number, difficulty: string, index: number) => 
   }
 };
 
-const setCachedAudio = (lessonId: number, difficulty: string, index: number, data: { base64Data: string; sampleRate: number; duration: number }) => {
+const setCachedAudio = (lessonId: number, difficulty: string, voiceGender: string, index: number, data: { base64Data: string; sampleRate: number; duration: number }) => {
   try {
-    const key = `mimick_audio_${lessonId}_${difficulty}_${index}`;
+    const key = `mimick_audio_${lessonId}_${difficulty}_${voiceGender}_${index}`;
     localStorage.setItem(key, JSON.stringify(data));
   } catch (e: any) {
     // 容量制限（QuotaExceededError）時は、他の古いレッスンのキャッシュを優先的に削除
@@ -111,7 +110,7 @@ const setCachedAudio = (lessonId: number, difficulty: string, index: number, dat
           }
         }
         
-        const key = `mimick_audio_${lessonId}_${difficulty}_${index}`;
+        const key = `mimick_audio_${lessonId}_${difficulty}_${voiceGender}_${index}`;
         localStorage.setItem(key, JSON.stringify(data));
       } catch (retryError) {
         console.error("Failed to save even after evicting older cache:", retryError);
@@ -134,10 +133,12 @@ const clearAllAudioCaches = () => {
 };
 
 // Gemini TTS API (音声合成)
-const generateSpeechWithRetry = async (text: string, apiKey: string) => {
+const generateSpeechWithRetry = async (text: string, apiKey: string, voiceName: string) => {
   if (!apiKey) throw new Error("APIキーが設定されていません。");
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${apiKey}`;
   
+  const validVoices = ['Aoede', 'Charon', 'Fenrir', 'Kore', 'Puck'];
+  const finalVoiceName = validVoices.includes(voiceName) ? voiceName : 'Aoede';
   const ttsText = text.trim().match(/[.,?!。！？]$/) ? text : text + ".";
   
   const payload = {
@@ -145,7 +146,7 @@ const generateSpeechWithRetry = async (text: string, apiKey: string) => {
     generationConfig: {
       responseModalities: ["AUDIO"],
       speechConfig: {
-        voiceConfig: { prebuiltVoiceConfig: { voiceName: "Aoede" } }
+        voiceConfig: { prebuiltVoiceConfig: { voiceName: finalVoiceName } }
       }
     }
   };
@@ -314,6 +315,64 @@ const DEFAULT_LESSONS: Lesson[] = [
   createLesson(6, "Lesson 6: ニュース (社会) (ES)", "El gobierno anunció hoy una nueva ley para proteger el medio ambiente, la cual entrará en vigor el próximo mes. Muchos ciudadanos han expresado su apoio a esta medida.")
 ];
 
+// Web Speech API 用に特定の言語の音声一覧を取得する関数
+const getVoicesForLanguage = (lang: string, allVoices: SpeechSynthesisVoice[]) => {
+  const targetLang = lang.toLowerCase().replace('_', '-');
+  const targetPrefix = targetLang.split('-')[0]; // e.g. "en", "ko", "es"
+
+  // 1. Try exact or subtag-compatible matches with normalized hyphens/underscores
+  let langMatch = allVoices.filter(v => {
+    const vLang = v.lang.toLowerCase().replace('_', '-');
+    return vLang === targetLang || vLang.startsWith(targetLang + '-') || targetLang.startsWith(vLang + '-');
+  });
+
+  // 2. Fallback to matching by main language code (e.g. "en", "ko", "es") if subtag-specific fails
+  if (langMatch.length === 0) {
+    langMatch = allVoices.filter(v => {
+      const vLang = v.lang.toLowerCase().replace('_', '-');
+      const vPrefix = vLang.split('-')[0];
+      return vPrefix === targetPrefix;
+    });
+  }
+
+  return langMatch;
+};
+
+// 名前またはデフォルトの割り当てに従って最適な音声を取得する関数
+const getBrowserVoiceByName = (voiceName: string, lang: string, allVoices: SpeechSynthesisVoice[]) => {
+  if (allVoices.length === 0) return null;
+
+  // 1. 名前での完全一致を試みる
+  if (voiceName) {
+    const exactMatch = allVoices.find(v => v.name === voiceName);
+    if (exactMatch) return exactMatch;
+  }
+
+  // 2. 言語ごとのデフォルト優先音声を割り当てる
+  const targetLang = lang.toLowerCase().replace('_', '-');
+  const targetPrefix = targetLang.split('-')[0];
+  const langVoices = getVoicesForLanguage(lang, allVoices);
+
+  if (targetPrefix === 'en') {
+    const samanthaMatch = langVoices.find(v => v.name.toLowerCase().includes('samantha'));
+    if (samanthaMatch) return samanthaMatch;
+  } else if (targetPrefix === 'ko' || targetPrefix === 'kr') {
+    const yunaMatch = langVoices.find(v => v.name.toLowerCase().includes('yuna'));
+    if (yunaMatch) return yunaMatch;
+  } else if (targetPrefix === 'es') {
+    const monicaMatch = langVoices.find(v => {
+      const nameLower = v.name.toLowerCase();
+      return nameLower.includes('mónica') || nameLower.includes('monica');
+    });
+    if (monicaMatch) return monicaMatch;
+  }
+
+  // 3. なければ、その言語の最初の音声を選択
+  return langVoices.length > 0 ? langVoices[0] : null;
+};
+
+
+
 export default function App() {
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('mimick_api_key') || '');
   const [showApiModal, setShowApiModal] = useState(() => !localStorage.getItem('mimick_api_key'));
@@ -331,9 +390,23 @@ export default function App() {
   const [difficulty, setDifficulty] = useState<'easy' | 'normal' | 'hard'>('normal'); 
   const [currentChunkIndex, setCurrentChunkIndex] = useState<number>(0);
   const [playbackRate, setPlaybackRate] = useState<number>(1.0);
+  const [ttsEngine, setTtsEngine] = useState<'gemini' | 'browser'>(
+    () => (localStorage.getItem('mimick_tts_engine') as any) || 'gemini'
+  );
+  const [voiceName, setVoiceName] = useState<string>(() => {
+    const savedName = localStorage.getItem('mimick_voice_name');
+    if (savedName) return savedName;
+    // Backward compatibility for users transitioning from legacy gender settings
+    const legacyGender = localStorage.getItem('mimick_voice_gender');
+    if (legacyGender === 'male') return 'Charon';
+    if (legacyGender === 'female') return 'Aoede';
+    return 'Aoede'; // Default to Aoede
+  });
+  const [showSettings, setShowSettings] = useState<boolean>(false);
   
   const [showText, setShowText] = useState<boolean>(false);
   const [revealedChunks, setRevealedChunks] = useState<number[]>([]);
+  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
 
   const [visibleTranslations, setVisibleTranslations] = useState<number[]>([]); 
   const [translations, setTranslations] = useState<Record<string, string>>({}); 
@@ -358,6 +431,20 @@ export default function App() {
       console.error("Failed to save lessons:", e);
     }
   }, [lessons]);
+
+  // Warm up the speechSynthesis voices so they are populated when playing
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      const updateVoices = () => {
+        setVoices(window.speechSynthesis.getVoices());
+      };
+      updateVoices();
+      window.speechSynthesis.addEventListener('voiceschanged', updateVoices);
+      return () => {
+        window.speechSynthesis.removeEventListener('voiceschanged', updateVoices);
+      };
+    }
+  }, []);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioCache = useRef<Record<string, Promise<{ url: string; duration: number; correctionRate: number }>>>({});
@@ -393,19 +480,19 @@ export default function App() {
 
   const getAudioInfo = async (lessonId: number, difficulty: string, index: number, text: string) => {
     if (!apiKey) throw new Error("APIキーが設定されていません。");
-    const cacheKey = `${lessonId}_${difficulty}_${index}`;
+    const cacheKey = `${lessonId}_${difficulty}_${voiceName}_${index}`;
     
     if (!audioCache.current[cacheKey]) {
       audioCache.current[cacheKey] = (async () => {
         try {
           // 1. ローカルストレージキャッシュの確認
-          let audioData = getCachedAudio(lessonId, difficulty, index);
+          let audioData = getCachedAudio(lessonId, difficulty, voiceName, index);
           
           // 2. なければ Gemini TTS API からロード
           if (!audioData) {
-            audioData = await generateSpeechWithRetry(text, apiKey);
+            audioData = await generateSpeechWithRetry(text, apiKey, voiceName);
             // キャッシュへ保存
-            setCachedAudio(lessonId, difficulty, index, audioData);
+            setCachedAudio(lessonId, difficulty, voiceName, index, audioData);
           }
           
           // 3. Base64データから WAV Blob & URL を生成
@@ -415,11 +502,11 @@ export default function App() {
           } catch (decodingError) {
             console.warn("Cached audio decoding failed. Invalid Base64 in storage. Retrying API fetch...", decodingError);
             // 破損したキャッシュを削除
-            const key = `mimick_audio_${lessonId}_${difficulty}_${index}`;
+            const key = `mimick_audio_${lessonId}_${difficulty}_${voiceName}_${index}`;
             localStorage.removeItem(key);
             // APIから再度ロードしてキャッシュを修復
-            audioData = await generateSpeechWithRetry(text, apiKey);
-            setCachedAudio(lessonId, difficulty, index, audioData);
+            audioData = await generateSpeechWithRetry(text, apiKey, voiceName);
+            setCachedAudio(lessonId, difficulty, voiceName, index, audioData);
             wavData = createWavFile(audioData.base64Data, audioData.sampleRate);
           }
           
@@ -505,12 +592,19 @@ export default function App() {
       setPrefetchProgress(0);
       let loadedCount = 0;
 
+      // ブラウザ標準音声の場合は、API通信も永続キャッシュも不要なため事前ロード（プリフェッチ）をスキップ
+      if (ttsEngine === 'browser') {
+        setPrefetchStatus('success');
+        setPrefetchProgress(100);
+        return;
+      }
+
       for (let i = 0; i < chunks.length; i++) {
         if (isCancelled) break;
         const text = chunks[i];
         
         // すでにローカルストレージにキャッシュがあるか確認
-        const hasCache = !!getCachedAudio(currentLesson?.id ?? -1, difficulty, i);
+        const hasCache = !!getCachedAudio(currentLesson?.id ?? -1, difficulty, voiceName, i);
         
         try {
           await getAudioInfo(currentLesson?.id ?? -1, difficulty, i, text);
@@ -565,9 +659,9 @@ export default function App() {
       isCancelled = true; 
       // メモリ内の Blob URL を途中で解放すると React 18 Strict Mode での並行実行時
       // アクティブなロードが破損するため、ここではフラグ設定 (isCancelled = true) のみに留め、
-      // 実際のリソース解放はコンポーネントの完全なアンマウント時のみに行います。
+      // 実際のリソース解放 is active only on full unmount
     };
-  }, [currentLessonIndex, difficulty, chunks, apiKey]);
+  }, [currentLessonIndex, difficulty, chunks, apiKey, ttsEngine, voiceName]);
 
   useEffect(() => {
     setRevealedChunks([]);
@@ -595,11 +689,67 @@ export default function App() {
 
   const playChunk = useCallback(async (index: number) => {
     if (currentLessonIndex === null || !currentLesson) return;
-    if (!apiKey) {
+    
+    // AI音声エンジンでAPIキーがない時のみモーダルを表示
+    if (ttsEngine === 'gemini' && !apiKey) {
       setShowApiModal(true);
       return;
     }
     const text = chunks[index];
+
+    // ブラウザ標準音声 (Web Speech API) を使用する場合の分岐
+    if (ttsEngine === 'browser') {
+      setIsLoading(true);
+      setErrorMsg('');
+      
+      if (audioRef.current) {
+        audioRef.current.pause();
+      }
+      
+      if (typeof window !== 'undefined' && window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+        
+        const lang = detectLanguage(text);
+        const utterance = new SpeechSynthesisUtterance(text);
+        
+        if (lang === 'kr') utterance.lang = 'ko-KR';
+        else if (lang === 'es') utterance.lang = 'es-ES';
+        else utterance.lang = 'en-US';
+        
+        const voice = getBrowserVoiceByName(voiceName, utterance.lang, voices);
+        if (voice) {
+          utterance.voice = voice;
+          utterance.lang = voice.lang; // Force strict language-tag alignment to prevent browser fallback
+        }
+        
+        utterance.rate = playbackRate;
+        
+        utterance.onstart = () => {
+          setIsLoading(false);
+          setIsPlaying(true);
+        };
+        utterance.onend = () => setIsPlaying(false);
+        utterance.onerror = (e) => {
+          console.error("Browser speech synthesis error:", e);
+          setIsPlaying(false);
+          setIsLoading(false);
+          setErrorMsg("音声合成に失敗しました。");
+        };
+        
+        audioRef.current = {
+          pause: () => {
+            window.speechSynthesis.cancel();
+            setIsPlaying(false);
+          }
+        } as any;
+        
+        window.speechSynthesis.speak(utterance);
+      } else {
+        setIsLoading(false);
+        setErrorMsg("ブラウザが音声合成に対応していません。");
+      }
+      return;
+    }
     try {
       setErrorMsg('');
       if (audioRef.current) {
@@ -639,7 +789,7 @@ export default function App() {
         setErrorMsg("AI音声の生成に失敗しました。APIキーが正しいか確認してください。");
       }
     }
-  }, [chunks, playbackRate, currentLessonIndex, currentLesson, difficulty, apiKey]);
+  }, [chunks, playbackRate, currentLessonIndex, currentLesson, difficulty, apiKey, ttsEngine, voiceName, voices]);
 
   const handlePlayCurrent = () => { if (!isLoading) playChunk(currentChunkIndex); };
   const handleNext = () => {
@@ -674,19 +824,6 @@ export default function App() {
       setVisibleTranslations(prev => prev.filter(i => i !== index));
     } else {
       setVisibleTranslations(prev => [...prev, index]);
-    }
-  };
-
-  const handleToggleAllTranslations = () => {
-    if (!apiKey) {
-      setShowApiModal(true);
-      return;
-    }
-    const allVisible = chunks.every((_, i) => visibleTranslations.includes(i));
-    if (allVisible) {
-      setVisibleTranslations([]);
-    } else {
-      setVisibleTranslations(chunks.map((_, i) => i));
     }
   };
 
@@ -776,8 +913,6 @@ export default function App() {
     }
   };
 
-  const allTranslationsVisible = chunks.length > 0 && chunks.every((_, i) => visibleTranslations.includes(i));
-
   return (
     <>
       {/* APIキー設定モーダル */}
@@ -786,15 +921,22 @@ export default function App() {
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden flex flex-col animate-in fade-in zoom-in-95 duration-200">
             <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
               <h3 className="font-bold text-slate-800 flex items-center gap-2"><Key size={18}/> APIキー設定</h3>
-              {apiKey && (
-                <button onClick={() => setShowApiModal(false)} className="text-slate-400 hover:text-slate-600 bg-white rounded-full p-1 shadow-sm">
-                  <X size={20} />
-                </button>
-              )}
+              <button 
+                onClick={() => {
+                  if (!apiKey) {
+                    localStorage.setItem('mimick_tts_engine', 'browser');
+                    setTtsEngine('browser');
+                  }
+                  setShowApiModal(false);
+                }} 
+                className="text-slate-400 hover:text-slate-600 bg-white rounded-full p-1 shadow-sm hover:bg-slate-50 transition-colors border border-slate-100"
+              >
+                <X size={18} />
+              </button>
             </div>
             <div className="p-5 flex flex-col gap-4">
               <p className="text-sm text-slate-600 leading-relaxed">
-                Mimick の音声生成と翻訳には <strong>Gemini API キー</strong> が必要です。キーはお使いのブラウザにのみ保存され、安全に利用できます。
+                Mimick の高音質な音声生成と自動翻訳には <strong>Gemini API キー</strong> が必要です。キーはお使いのブラウザにのみ保存され、安全に利用できます。キーを設定しない場合は、ブラウザ内蔵音声で学習を進められます。
               </p>
               <a 
                 href="https://aistudio.google.com/app/apikey" 
@@ -815,14 +957,18 @@ export default function App() {
               </div>
             </div>
             <div className="p-4 border-t border-slate-100 bg-slate-50 flex justify-end gap-3">
-              {apiKey && (
-                <button 
-                  onClick={() => setShowApiModal(false)}
-                  className="px-4 py-2 text-slate-600 font-medium hover:bg-slate-200 rounded-lg transition-colors text-sm"
-                >
-                  キャンセル
-                </button>
-              )}
+              <button 
+                onClick={() => {
+                  if (!apiKey) {
+                    localStorage.setItem('mimick_tts_engine', 'browser');
+                    setTtsEngine('browser');
+                  }
+                  setShowApiModal(false);
+                }}
+                className="px-4 py-2 text-slate-600 hover:text-slate-700 font-medium hover:bg-slate-100 rounded-lg border border-slate-200 transition-colors text-sm"
+              >
+                {apiKey ? "キャンセル" : "スキップ (ブラウザ音声を使用)"}
+              </button>
               <button 
                 onClick={handleSaveApiKey}
                 disabled={!tempApiKey.trim()}
@@ -1029,34 +1175,7 @@ export default function App() {
                 </div>
               )}
 
-              {/* 区切りの長さの調整エリア */}
-              <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 mb-4">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                  <div className="flex items-center gap-2 text-slate-600">
-                    <Scissors size={18} />
-                    <span className="font-medium text-sm">チャンク（区切り）の長さ</span>
-                  </div>
-                  <div className="flex bg-slate-100 p-1 rounded-xl sm:w-64">
-                    {[
-                      { id: 'easy', label: '短め' },
-                      { id: 'normal', label: '標準' },
-                      { id: 'hard', label: '長め' }
-                    ].map((level) => (
-                      <button
-                        key={level.id}
-                        onClick={() => setDifficulty(level.id as any)}
-                        className={`flex-1 py-1.5 text-sm font-medium rounded-lg transition-all ${
-                          difficulty === level.id 
-                            ? 'bg-white text-blue-600 shadow-sm' 
-                            : 'text-slate-500 hover:text-slate-700'
-                        }`}
-                      >
-                        {level.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
+
 
               <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden relative">
                 <div className="w-full bg-slate-100 h-1.5 relative">
@@ -1076,16 +1195,6 @@ export default function App() {
                       <span className="hidden lg:flex items-center gap-1 text-xs text-slate-400 bg-slate-50 px-2 py-1 rounded-md">
                         <Zap size={12} className="text-amber-500" /> Auto-Pacing
                       </span>
-
-                      <button 
-                        onClick={handleToggleAllTranslations} 
-                        className={`flex items-center gap-1.5 text-sm font-medium px-3 py-1.5 rounded-lg transition-colors shadow-sm ${
-                          allTranslationsVisible ? 'text-blue-600 bg-blue-50 border border-blue-200' : 'text-slate-600 hover:bg-slate-100 border border-slate-200'
-                        }`}
-                      >
-                        <Globe size={16} /> 
-                        {allTranslationsVisible ? '自動翻訳: ON' : '自動翻訳: OFF'}
-                      </button>
 
                       <button 
                         onClick={() => setShowText(!showText)} 
@@ -1165,12 +1274,31 @@ export default function App() {
                     onClick={() => handleToggleTrans(currentChunkIndex)}
                     className="flex items-center gap-1.5 text-sm font-medium text-slate-500 hover:text-blue-600 bg-white border border-slate-200 hover:border-blue-200 rounded-full px-4 py-1.5 transition-colors shadow-sm"
                   >
-                    <Globe size={16} /> 今の塊の訳を見る
+                    <Globe size={16} /> 今のチャンクの訳を見る
                   </button>
                 )}
               </div>
 
               <div className="flex justify-center items-center gap-6 md:gap-8 w-full mb-4">
+                {/* 選択中のチャンクのぼかしON/OFFトグル (左端) */}
+                <button 
+                  onClick={() => {
+                    setRevealedChunks(prev => 
+                      prev.includes(currentChunkIndex) 
+                        ? prev.filter(i => i !== currentChunkIndex) 
+                        : [...prev, currentChunkIndex]
+                    );
+                  }} 
+                  className={`p-3 rounded-full transition-all duration-200 ${
+                    revealedChunks.includes(currentChunkIndex) 
+                      ? 'bg-blue-50 text-blue-600 shadow-sm' 
+                      : 'text-slate-400 hover:text-blue-600 hover:bg-blue-50'
+                  }`}
+                  title={revealedChunks.includes(currentChunkIndex) ? "選択中のチャンクをぼかす" : "選択中のチャンクを表示"}
+                >
+                  {revealedChunks.includes(currentChunkIndex) ? <EyeOff size={24} strokeWidth={2} /> : <Eye size={24} strokeWidth={2} />}
+                </button>
+
                 <button 
                   onClick={handlePrev} 
                   disabled={currentChunkIndex === 0 || isLoading}
@@ -1204,15 +1332,87 @@ export default function App() {
                 >
                   <SkipForward size={28} strokeWidth={2} />
                 </button>
+
+                <button 
+                  onClick={() => setShowSettings(!showSettings)} 
+                  className={`p-3 rounded-full transition-all duration-200 ${
+                    showSettings 
+                      ? 'bg-blue-50 text-blue-600 shadow-sm' 
+                      : 'text-slate-400 hover:text-blue-600 hover:bg-blue-50'
+                  }`}
+                  title="詳細設定"
+                >
+                  <SlidersHorizontal size={24} strokeWidth={2} />
+                </button>
               </div>
               
-              <div className="w-full max-w-md mx-auto">
-                <div className="flex items-center justify-between text-xs text-slate-500 mb-1.5 font-medium px-1">
-                  <div className="flex items-center gap-1.5">
-                    <Gauge size={14} />
+              {/* トグル可能な設定エリア */}
+              {showSettings && (
+                <div className="w-full max-w-md mx-auto space-y-4 pt-4 pb-2 border-t border-slate-100 animate-in fade-in slide-in-from-top-3 duration-200">
+                  <div className="grid grid-cols-2 gap-3">
+                    {/* チャンク（区切り）の長さ */}
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-1 text-[11px] text-slate-500 font-medium px-1">
+                        <Scissors size={12} />
+                        <span>チャンク（区切り）の長さ</span>
+                      </div>
+                      <select
+                        value={difficulty}
+                        onChange={(e) => setDifficulty(e.target.value as any)}
+                        className="w-full py-1 px-2 text-[11px] font-semibold rounded-lg border border-slate-200 bg-white text-slate-700 shadow-sm focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 h-[26px]"
+                      >
+                        <option value="easy">短め (Easy)</option>
+                        <option value="normal">標準 (Normal)</option>
+                        <option value="hard">長め (Hard)</option>
+                      </select>
+                    </div>
+
+                    {/* 音声の選択 */}
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-1 text-[11px] text-slate-500 font-medium px-1">
+                        <Mic size={12} />
+                        <span>音声の選択</span>
+                      </div>
+                      <select
+                        value={
+                          ttsEngine === 'browser' 
+                            ? 'browser' 
+                            : (voiceName === 'Charon' ? 'gemini-male' : 'gemini-female')
+                        }
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          if (val === 'browser') {
+                            localStorage.setItem('mimick_tts_engine', 'browser');
+                            setTtsEngine('browser');
+                          } else {
+                            localStorage.setItem('mimick_tts_engine', 'gemini');
+                            setTtsEngine('gemini');
+                            const vName = val === 'gemini-female' ? 'Aoede' : 'Charon';
+                            localStorage.setItem('mimick_voice_name', vName);
+                            setVoiceName(vName);
+                          }
+                        }}
+                        className="w-full py-1 px-2 text-[11px] font-semibold rounded-lg border border-slate-200 bg-white text-slate-700 shadow-sm focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 h-[26px]"
+                      >
+                        <option value="gemini-female">Gemini (女性)</option>
+                        <option value="gemini-male">Gemini (男性)</option>
+                        <option value="browser">ブラウザ</option>
+                      </select>
+
+
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* 再生速度 (常に表示) */}
+              <div className={`w-full max-w-md mx-auto space-y-1 ${showSettings ? 'pt-2' : 'pt-4 border-t border-slate-100'}`}>
+                <div className="flex items-center justify-between text-[11px] text-slate-500 font-medium px-1">
+                  <div className="flex items-center gap-1">
+                    <Gauge size={12} />
                     <span>再生速度</span>
                   </div>
-                  <span className="text-blue-600 font-bold bg-blue-50 px-1.5 py-0.5 rounded">
+                  <span className="text-blue-600 font-bold bg-blue-50 px-1.5 py-0.5 rounded text-[10px]">
                     {playbackRate.toFixed(1)}x
                   </span>
                 </div>

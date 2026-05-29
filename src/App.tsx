@@ -135,7 +135,7 @@ const clearAllAudioCaches = () => {
 // Gemini TTS API (音声合成)
 const generateSpeechWithRetry = async (text: string, apiKey: string, voiceName: string) => {
   if (!apiKey) throw new Error("APIキーが設定されていません。");
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${apiKey}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent?key=${apiKey}`;
   
   const validVoices = ['Aoede', 'Charon', 'Fenrir', 'Kore', 'Puck'];
   const finalVoiceName = validVoices.includes(voiceName) ? voiceName : 'Aoede';
@@ -191,7 +191,7 @@ const generateSpeechWithRetry = async (text: string, apiKey: string, voiceName: 
 // Gemini API (テキスト翻訳)
 const translateChunkWithRetry = async (chunkText: string, fullText: string, apiKey: string) => {
   if (!apiKey) throw new Error("APIキーが設定されていません。");
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${apiKey}`;
   
   const prompt = `あなたはプロの翻訳家です。以下の文章全体の文脈を考慮して、[対象部分]を自然な日本語に翻訳してください。出力は翻訳結果のテキストのみとし、他の言葉や記号、解説は一切含めないでください。文の途中であっても、その部分のニュアンスが伝わるように訳してください。
 
@@ -231,7 +231,7 @@ ${chunkText}`;
 // Gemini API を用いたセマンティックチャンク分割＆翻訳の一括取得
 const generateSemanticChunksWithGemini = async (text: string, apiKey: string) => {
   if (!apiKey) throw new Error("API key not set");
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${apiKey}`;
 
   const lang = detectLanguage(text);
   const langFullName = lang === 'kr' ? 'Korean' : lang === 'es' ? 'Spanish' : 'English';

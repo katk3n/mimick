@@ -6,6 +6,14 @@ Mimick is a modern, static web application designed to help language learners pe
 
 ## 🌟 Key Features
 
+*   **AI-Powered Prompt-Driven Lesson Generation**: 
+    *   Simply enter a prompt or topic (e.g., "Order coffee in a cafe", "Introduce yourself in a business meeting"), and Gemini will automatically generate a highly natural and context-appropriate lesson text and title.
+*   **Customizable Lesson Lengths**: 
+    *   When using the AI generation mode, you can specify the target length of the text: **Easy (~30 words)**, **Normal (~100 words)**, or **Hard (~200 words)** to suit your current proficiency or lesson focus.
+*   **Premium Tabbed Creation Modal**: 
+    *   A state-of-the-art sliding tab interface that allows users to switch fluidly between pasting raw text directly and auto-generating lessons using AI prompts.
+*   **Automatic Blind State Reset**: 
+    *   To keep your auditory focus primary, switching lessons or toggling difficulty levels automatically resets the visibility of text and translations to hidden (blurred), ensuring you always listen first.
 *   **Automatic Language Detection**: Instantly detects whether the input text is in English (EN), Korean (KR), or Spanish (ES).
 *   **Next-Generation AI Speech Synthesis (Gemini 3.1 TTS)**: Generates incredibly high-fidelity spoken audio using the state-of-the-art `gemini-3.1-flash-tts-preview` model.
 *   **Dual-Model TTS Fallback (Fault Tolerance)**:

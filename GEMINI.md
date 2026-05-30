@@ -97,4 +97,7 @@ When modifying this integration, strictly adhere to these practices:
    Audio caching is critical. Do not perform redundant API requests. Always check `localStorage` and `audioCache` memory refs before initiating a network fetch.
 5. **Preserve Dual-Model TTS Fallback Strategy**:
    Always prioritize the high-fidelity `gemini-3.1-flash-tts-preview` model but preserve the automatic recovery fallback to `gemini-2.5-flash-preview-tts` on network, server, or rate-limiting failures to keep the shadowing feature uninterrupted.
+6. **Defend Against Prompt Injection**:
+   Wrap any user-provided inputs (e.g. prompt text in the lesson generator) with strict delimiters (such as triple quotes `"""`) and enforce safety constraints in the `systemInstruction` to ensure the API treats inputs strictly as text rather than executable commands.
+
 

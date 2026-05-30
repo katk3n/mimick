@@ -14,10 +14,10 @@ Mimick is a language reproduction training (shadowing/reproduction) application 
 
 Always use the designated stable model IDs listed below. Do not use deprecated preview IDs.
 
-| Feature / Modality | Purpose | Model ID | API Endpoint |
-| :--- | :--- | :--- | :--- |
-| **Text Generation** | Translation & Semantic Chunking | `gemini-3.1-flash-lite` | `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent` |
-| **Speech Generation (TTS)** | High-fidelity audio generation | `gemini-3.1-flash-tts-preview` | `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent` |
+| Feature / Modality | Purpose | Primary Model ID | Fallback Model ID | API Endpoint |
+| :--- | :--- | :--- | :--- | :--- |
+| **Text Generation** | Translation & Semantic Chunking | `gemini-3.1-flash-lite` | *None* | `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent` |
+| **Speech Generation (TTS)** | High-fidelity audio generation | `gemini-3.1-flash-tts-preview` | `gemini-2.5-flash-preview-tts` | `https://generativelanguage.googleapis.com/v1beta/models/{modelId}:generateContent` |
 
 ---
 
@@ -25,7 +25,8 @@ Always use the designated stable model IDs listed below. Do not use deprecated p
 
 ### 3.1. Text-to-Speech (`generateSpeechWithRetry`)
 Located in [App.tsx](file:///Users/kentaktwo/projects/katk3n/mimick/src/App.tsx).
-- **Endpoint**: Uses `gemini-3.1-flash-tts-preview` to synthesize text.
+- **Endpoint**: Uses `gemini-3.1-flash-tts-preview` by default.
+- **Dynamic Fallback Recovery**: If a rate limit (`429`) or server error (`5xx`/network failure) is encountered, the generator seamlessly falls back to `gemini-2.5-flash-preview-tts` for subsequent retry attempts, ensuring robust playback availability.
 - **Request Modality**: Configured to `AUDIO` output.
 - **Response Format**: Extracts inline base64 audio data.
 - **WAV Packaging**: Since the inline API response gives raw audio data, the application packages the raw audio data into a client-side WAV container using the utility `createWavFile`.
@@ -94,3 +95,6 @@ When modifying this integration, strictly adhere to these practices:
    If changing semantic chunking prompts, update `responseSchema` accordingly to prevent parsing exceptions.
 4. **Client-side Performance Optimization**:
    Audio caching is critical. Do not perform redundant API requests. Always check `localStorage` and `audioCache` memory refs before initiating a network fetch.
+5. **Preserve Dual-Model TTS Fallback Strategy**:
+   Always prioritize the high-fidelity `gemini-3.1-flash-tts-preview` model but preserve the automatic recovery fallback to `gemini-2.5-flash-preview-tts` on network, server, or rate-limiting failures to keep the shadowing feature uninterrupted.
+

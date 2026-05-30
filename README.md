@@ -1,25 +1,29 @@
 # Mimick - AI-Powered Reproduction (Listen & Repeat) Training App
 
-Mimick is a web application designed to help language learners perform "reproduction training" (widely known as "Listen and Repeat" or sentence repetition) and "shadowing" effectively using **Gemini API** for **English, Korean, and Spanish**.
+Mimick is a modern, static web application designed to help language learners perform "reproduction training" (widely known as "Listen and Repeat" or sentence repetition) and "shadowing" effectively using **Google Gemini API** for **English, Korean, and Spanish**.
 
 ---
 
 ## 🌟 Key Features
 
 *   **Automatic Language Detection**: Instantly detects whether the input text is in English (EN), Korean (KR), or Spanish (ES).
-*   **AI-Powered Speech Synthesis (Gemini TTS)**: Generates high-quality, clear AI voices (Aoede voice) on-demand for each chunk.
-*   **Intelligent Text Chunking**: 
-    *   Automatically splits text into meaningful semantic chunks based on grammar and particles.
-    *   Dynamic adjustment of chunk lengths based on difficulty level (Easy / Normal / Hard).
+*   **Next-Generation AI Speech Synthesis (Gemini 3.1 TTS)**: Generates incredibly high-fidelity spoken audio using the state-of-the-art `gemini-3.1-flash-tts-preview` model.
+*   **Dual-Model TTS Fallback (Fault Tolerance)**:
+    *   To guarantee highly reliable audio playback, the system features a built-in recovery mechanism. If the primary 3.1 TTS model hits a rate limit (429) or encounters temporary server/network failures, it seamlessly falls back to `gemini-2.5-flash-preview-tts` on subsequent retry attempts.
+*   **Intelligent AI Semantic Chunking**: 
+    *   Using `gemini-3.1-flash-lite`, the app segments sentences into natural, grammatical constituent-aligned parts based on actual semantic meaning and cognitive load.
+    *   Supports three distinct pedagogical difficulty levels (**Easy / Normal / Hard**).
+*   **Context-Aware Translations**: 
+    *   Generates accurate, idiomatic Japanese translations for each chunk by analyzing the entire context of the lesson text using `gemini-3.1-flash-lite` rather than literal, robotic word-for-word translation.
+*   **Granular Cache & Data Management**:
+    *   **Per-Lesson Audio Cache Clearing**: Easily delete local storage audio cache for specific lessons directly from the home screen (`VolumeX` icon) to manage browser storage limits.
+    *   **On-Demand AI Data Regeneration**: Recalculate AI semantic chunking and translation details via Gemini on-demand (`RefreshCw` icon) with intuitive card-level loading status.
 *   **Blind Training Mode (Blurred Text)**:
-    *   By default, the original text is blurred, allowing you to focus entirely on listening.
-    *   You can click on individual chunks to temporarily reveal them.
-*   **Contextual Translation**: 
-    *   Generates extremely natural Japanese translations for each chunk by analyzing the context of the entire text using `gemini-2.5-flash`.
+    *   Original texts and translations are blurred by default, forcing you to focus entirely on auditory listening. Click individual chunks to temporarily reveal them.
+*   **Advanced Sequencing Control**: Defers audio prefetching and playback automatically until AI chunking finishes, preventing visual/auditory mismatch. Falls back elegantly to regex-based local chunking on API failure to prevent lockups.
 *   **Playback Speed Control**: Seamlessly adjust the audio speed from 0.5x to 2.0x.
-*   **Custom Lesson Input**: Add custom texts such as news, TED talks, or drama scripts to practice with instantly.
 *   **Secure API Key Management (Bring Your Own Key)**:
-    *   Your Gemini API key is stored safely in your browser's local storage (`localStorage`). It is never uploaded to any external server.
+    *   Your Gemini API key is stored locally in your browser (`localStorage`). It is never sent to any third-party backend servers.
 
 ---
 
@@ -28,8 +32,9 @@ Mimick is a web application designed to help language learners perform "reproduc
 *   **Frontend**: React, TypeScript, Vite
 *   **Styling**: Tailwind CSS v4
 *   **Icons**: Lucide React
-*   **APIs**: Gemini API (Google AI Studio)
-    *   Models: `gemini-2.5-flash` (for translations) / `gemini-2.5-flash-preview-tts` (for speech synthesis)
+*   **APIs**: Google Gemini API (Google AI Studio)
+    *   **Text/Chunking Model**: `gemini-3.1-flash-lite`
+    *   **TTS Model**: `gemini-3.1-flash-tts-preview` (with fallback to `gemini-2.5-flash-preview-tts`)
 
 ---
 

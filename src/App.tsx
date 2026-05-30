@@ -2,12 +2,14 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { 
   Play, 
   Volume2, 
+  VolumeX,
   SkipBack, 
   SkipForward, 
   Eye, 
   EyeOff, 
   Gauge,
   Scissors,
+  RefreshCw,
   Loader2,
   AlertTriangle,
   CheckCircle2,
@@ -132,10 +134,40 @@ const clearAllAudioCaches = () => {
   }
 };
 
+// 特定のお題（レッスン）の音声キャッシュを一括削除する
+const clearLessonAudioCache = (lessonId: number) => {
+  try {
+    const keyPrefix = `mimick_audio_${lessonId}_`;
+    const keys = Object.keys(localStorage);
+    keys.forEach(key => {
+      if (key.startsWith(keyPrefix)) {
+        localStorage.removeItem(key);
+      }
+    });
+  } catch (e) {
+    console.error(`Failed to clear audio cache for lesson ${lessonId}:`, e);
+  }
+};
+
+// 特定のお題（レッスン）の音声キャッシュが存在するか判定する
+const hasAudioCacheForLesson = (lessonId: number, _trigger?: number): boolean => {
+  try {
+    const keyPrefix = `mimick_audio_${lessonId}_`;
+    const keys = Object.keys(localStorage);
+    return keys.some(key => key.startsWith(keyPrefix));
+  } catch (e) {
+    return false;
+  }
+};
+
+// 該当お題にAIによるGemini分割データ（chunkTranslations）が存在するか判定する
+const hasGeminiDataForLesson = (lesson: Lesson): boolean => {
+  return !!lesson.chunkTranslations;
+};
+
 // Gemini TTS API (音声合成)
 const generateSpeechWithRetry = async (text: string, apiKey: string, voiceName: string) => {
   if (!apiKey) throw new Error("APIキーが設定されていません。");
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent?key=${apiKey}`;
   
   const validVoices = ['Aoede', 'Charon', 'Fenrir', 'Kore', 'Puck'];
   const finalVoiceName = validVoices.includes(voiceName) ? voiceName : 'Aoede';
@@ -152,8 +184,12 @@ const generateSpeechWithRetry = async (text: string, apiKey: string, voiceName: 
   };
 
   const delays = [1000, 2000, 4000, 8000];
+  let useFallbackModel = false;
   
   for (let i = 0; i <= delays.length; i++) {
+    const modelId = useFallbackModel ? 'gemini-2.5-flash-preview-tts' : 'gemini-3.1-flash-tts-preview';
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`;
+    
     try {
       const response = await fetch(url, {
         method: 'POST',
@@ -161,7 +197,12 @@ const generateSpeechWithRetry = async (text: string, apiKey: string, voiceName: 
         body: JSON.stringify(payload)
       });
       
-      if (!response.ok) throw new Error(`API error: ${response.status}`);
+      if (!response.ok) {
+        if (response.status === 429 || response.status >= 500) {
+          useFallbackModel = true;
+        }
+        throw new Error(`API error: ${response.status}`);
+      }
 
       const data = await response.json();
       const inlineData = data.candidates?.[0]?.content?.parts?.[0]?.inlineData;
@@ -183,6 +224,7 @@ const generateSpeechWithRetry = async (text: string, apiKey: string, voiceName: 
       throw new Error("No audio data returned");
     } catch (err) {
       if (i === delays.length) throw err;
+      useFallbackModel = true;
       await new Promise(res => setTimeout(res, delays[i]));
     }
   }
@@ -481,6 +523,42 @@ const getBrowserVoiceByName = (voiceName: string, lang: string, allVoices: Speec
 
 export default function App() {
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('mimick_api_key') || '');
+  const [cacheTrigger, setCacheTrigger] = useState<number>(0);
+  const [processingLessonId, setProcessingLessonId] = useState<number | null>(null);
+  const [isUpgradingLesson, setIsUpgradingLesson] = useState<boolean>(false);
+
+  // AIによるチャンク分割と翻訳データをGemini APIを用いて再生成する
+  const regenerateLessonChunksAndTranslations = async (lessonId: number, fullText: string) => {
+    if (!apiKey) {
+      setTempApiKey(apiKey);
+      setShowApiModal(true);
+      return;
+    }
+    setProcessingLessonId(lessonId);
+    try {
+      const result = await generateSemanticChunksWithGemini(fullText, apiKey);
+      setLessons(prevLessons =>
+        prevLessons.map(l =>
+          l.id === lessonId
+            ? {
+                ...l,
+                chunks: result.chunks,
+                chunkTranslations: result.chunkTranslations
+              }
+            : l
+        )
+      );
+      // 新しいチャンク構造に変更されるため、古い音声キャッシュをクリア
+      clearLessonAudioCache(lessonId);
+      setCacheTrigger(prev => prev + 1);
+      alert("AIによるチャンク分割と翻訳データを再生成しました。");
+    } catch (err) {
+      console.error("Failed to regenerate lesson chunks with Gemini:", err);
+      alert("AIによる再生成に失敗しました。APIキーまたは接続状況をご確認ください。");
+    } finally {
+      setProcessingLessonId(null);
+    }
+  };
   const [showApiModal, setShowApiModal] = useState(() => !localStorage.getItem('mimick_api_key'));
   const [tempApiKey, setTempApiKey] = useState(apiKey);
 
@@ -591,6 +669,7 @@ export default function App() {
     let isCancelled = false;
 
     const upgradeLessonWithGemini = async () => {
+      setIsUpgradingLesson(true);
       try {
         const result = await generateSemanticChunksWithGemini(lesson.fullText, apiKey);
         if (isCancelled) return;
@@ -614,6 +693,10 @@ export default function App() {
         setVisibleTranslations([]);
       } catch (err) {
         console.error("Failed to automatically upgrade lesson chunks with Gemini:", err);
+      } finally {
+        if (!isCancelled) {
+          setIsUpgradingLesson(false);
+        }
       }
     };
 
@@ -760,6 +843,14 @@ export default function App() {
       setPrefetchStatus('idle');
       return;
     }
+
+    // AIアップグレード処理中の場合は、プリフェッチをスキップして完了を待つ
+    if (isUpgradingLesson) {
+      setPrefetchStatus('loading');
+      setPrefetchProgress(0);
+      return;
+    }
+
     let isCancelled = false;
     
     const prefetchData = async () => {
@@ -840,7 +931,7 @@ export default function App() {
       // アクティブなロードが破損するため、ここではフラグ設定 (isCancelled = true) のみに留め、
       // 実際のリソース解放 is active only on full unmount
     };
-  }, [currentLessonIndex, difficulty, chunks, apiKey, ttsEngine, voiceName]);
+  }, [currentLessonIndex, difficulty, chunks, apiKey, ttsEngine, voiceName, isUpgradingLesson]);
 
   useEffect(() => {
     setRevealedChunks([]);
@@ -868,6 +959,12 @@ export default function App() {
 
   const playChunk = useCallback(async (index: number) => {
     if (currentLessonIndex === null || !currentLesson) return;
+    
+    // AIアップグレード待ちの場合は再生を防ぐ
+    if (isUpgradingLesson) {
+      setErrorMsg("お題のAI解析が完了するまでお待ちください。");
+      return;
+    }
     
     // AI音声エンジンでAPIキーがない時のみモーダルを表示
     if (ttsEngine === 'gemini' && !apiKey) {
@@ -968,7 +1065,7 @@ export default function App() {
         setErrorMsg("AI音声の生成に失敗しました。APIキーが正しいか確認してください。");
       }
     }
-  }, [chunks, playbackRate, currentLessonIndex, currentLesson, difficulty, apiKey, ttsEngine, voiceName, voices]);
+  }, [chunks, playbackRate, currentLessonIndex, currentLesson, difficulty, apiKey, ttsEngine, voiceName, voices, isUpgradingLesson]);
 
   const handlePlayCurrent = () => { if (!isLoading) playChunk(currentChunkIndex); };
   const handleNext = () => {
@@ -1333,6 +1430,45 @@ export default function App() {
                       >
                         <Edit3 size={16} />
                       </button>
+                      {hasGeminiDataForLesson(lesson) && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (processingLessonId !== null) return;
+                            if (confirm(`「${displayTitle}」のAIによるチャンク分割と翻訳データを再生成しますか？\n（整合性を保つため、このレッスンの音声キャッシュも同時に削除されます）`)) {
+                              regenerateLessonChunksAndTranslations(lesson.id, lesson.fullText);
+                            }
+                          }}
+                          disabled={processingLessonId !== null}
+                          className={`p-2 rounded-lg transition-colors md:opacity-0 group-hover:opacity-100 focus:opacity-100 ${
+                            processingLessonId === lesson.id
+                              ? 'text-blue-500 bg-blue-50'
+                              : 'text-blue-500 hover:text-blue-700 hover:bg-blue-50'
+                          }`}
+                          title="AI分割・翻訳データを再生成"
+                        >
+                          {processingLessonId === lesson.id ? (
+                            <Loader2 size={16} className="animate-spin" />
+                          ) : (
+                            <RefreshCw size={16} />
+                          )}
+                        </button>
+                      )}
+                      {hasAudioCacheForLesson(lesson.id, cacheTrigger) && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (confirm(`「${displayTitle}」の音声キャッシュを削除しますか？\n（次回の再生時に再度Gemini APIからダウンロードされます）`)) {
+                              clearLessonAudioCache(lesson.id);
+                              setCacheTrigger(prev => prev + 1);
+                            }
+                          }}
+                          className="p-2 text-amber-500 hover:text-amber-700 hover:bg-amber-50 rounded-lg transition-colors md:opacity-0 group-hover:opacity-100 focus:opacity-100"
+                          title="音声キャッシュを削除"
+                        >
+                          <VolumeX size={16} />
+                        </button>
+                      )}
                       <button
                         onClick={(e) => handleDeleteLesson(lesson.id, e)}
                         className="p-2 text-slate-400 hover:text-red-600 hover:bg-slate-100 rounded-lg transition-colors md:opacity-0 group-hover:opacity-100 focus:opacity-100"
